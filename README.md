@@ -8,10 +8,10 @@ The API
 
 Markup Controls:
 
-	- `data-tooltip`
+ - `data-tooltip`
 	The URL to pull as the tooltip or the tooltip trigger
 
-	- `data-tooltip-side`
+ - `data-tooltip-side`
 	Side to place the tooltip on
 
 Example: 
