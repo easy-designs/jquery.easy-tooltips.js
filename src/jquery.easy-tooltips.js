@@ -3,18 +3,60 @@
 /*------------------------------------------------------------------------------
  * API
  * 
- * Documentation to come…
+ * This plugin makes it easy to manage text-based or rich media tooltips
+ * (gathered via ajax).
  * 
  * Markup Controls:
  * 
- * bool	data-tooltip
+ * str	data-tooltip
  * 		The URL to pull as the tooltip or the tooltip trigger
  * str	data-tooltip-side
  * 		Side to place the tooltip on
  * 
  * Example: 
  * 
- * 		<a rel="bookmark" href="/path" data-tooltip="/tooltip/url" data-tooltip-side="top">
+ * 		<a rel="bookmark" href="/path"
+ * 		   data-tooltip="/tooltip/url"
+ * 		   data-tooltip-side="top">
+ * 
+ * This can also be used on other elements, but make sure they are focus-able 
+ * via keyboards too (using tabindex="0"):
+ *
+ * 		<abbr data-tooltip
+ * 			title="This is my title which will show up in a tooltip"
+ * 			tabindex="0">…</abbr>
+ * 
+ * Batching
+ * 
+ * This script will attempt to batch request tooltips who share the same 
+ * root URL by sending all requested tootltip IDs in a comma-separated string.
+ * To return a batch, simply ensure that the HTML fragment contains root 
+ * elements with an id attribute set to "node-id-" followed by the requested
+ * id. The JavaScript will pluck each tooltip out of the response and associate
+ * it with the appropriate element.
+ * 
+ * 	Example:
+ * 
+ * 		<a rel="bookmark" href="/path"
+ * 		   data-tooltip="/tooltip/for/?id=1234"
+ * 		   data-tooltip-side="top">
+ * 		<a rel="bookmark" href="/path"
+ * 		   data-tooltip="/tooltip/for/?id=2345"
+ * 		   data-tooltip-side="top">
+ * 
+ * 		Results in a request for
+ * 
+ * 		/tooltip/for/?ids=1234,2345
+ * 
+ * 		The expected response would be in this format (the use of div being
+ * 		simply an example):
+ * 
+ * 		<div id="node-id-1234">
+ * 			<!-- some content -->
+ * 		</div>
+ * 		<div id="node-id-2345">
+ * 			<!-- other content -->
+ * 		</div>
  * 
  * ---------------------------------------------------------------------------*/
 
@@ -41,9 +83,12 @@
 		hiding = NULL,
 		active = FALSE,
 		watching = FALSE,
+		toolKey = "id",
 		width,
 		height,
-		body_o_position;
+		body_o_position,
+		unique = ( new Date() ).getTime(),
+		tap_evt = ('ontouchstart' in window || 'createTouch' in document) ? 'touchstart' : 'click';
 	
 	
 	// resize watcher
@@ -73,6 +118,7 @@
 	{
 		width = $window.width();
 		height = $body.height();
+		watching = width > 480;
 	}
 	window.watchResize(getDimensions);
 	
@@ -82,7 +128,7 @@
 		{
 			return;
 		}
-		
+
 		var $items = $( trigger_selector ),
 			batches = {},
 			re = /(.+)\?(.+)=(.+)/,
@@ -92,31 +138,53 @@
 			
 			var $this = $(this),
 				location = $this.data( TOOLTIP ),
-				endpoint = location.replace( re, '$1' ),
-				key = location.replace( re, '$2' ),
-				value = location.replace( re, '$3' ),
+				$preloaded_tip = $this.data( 'preloaded-' + TOOLTIP ),
+				isQuery,
+				endpoint,
+				key,
+				value,
 				text;
 			
-			// Normal tooltip
+			// bow out if we have it
+			if ( location != '' &&
+				 location in tooltips )
+			{
+				return;
+			}
+
+			isQuery = location.indexOf("?");
+			endpoint = isQuery >= 0 ? location.replace( re, '$1' ) : location.substr(0, location.lastIndexOf('/'));
+			key = isQuery >= 0 ? location.replace( re, '$2' ) : '';
+			value = isQuery >= 0 ? location.replace( re, '$3' ) : location.substr(location.lastIndexOf('/') + 1);
+
 			if ( location == '' )
 			{
-				text = $this.attr('title');
-				tooltips[text] = $tooltip.clone()
-									.append(
-										$('<article><p/></article>')
-											.find('p')
-												.text(text).end()
-									 );
+				// Pre-loaded
+				if ( $preloaded_tip )
+				{
+					location = unique++;
+					$this.data( TOOLTIP, location );
+					tooltips[location] = $tooltip.clone()
+											.append(
+												$preloaded_tip
+											 );
+				}
+				// Normal tooltip
+				else
+				{
+					text = $this.attr('title');
+					tooltips[text] = $tooltip.clone()
+										.append(
+											$('<article><p/></article>')
+												.find('p')
+													.text(text).end()
+										 );
+				}
 			}
 			// Ajax tooltip
 			else
 			{
-				// bow out if we have it
-				if ( location in tooltips )
-				{
-					return;
-				}
-
+				
 				// set up the hash
 				if ( batches[endpoint] == UNDEFINED )
 				{
@@ -134,7 +202,6 @@
 				}
 				
 			}
-			
 		});
 		
 		// now load the batches into the tooltips object
@@ -142,28 +209,50 @@
 			
 			// keys may differ
 			$.each( obj, function( key, value ){
+				$isQuery = (key != '');
 				
-				// built he get string
-				var get = {};
-				get[key] = value.join(',');
+				if ($isQuery) {
+					// build the get string
+					var get = {};
+					get[key] = value.join(',');
+					
+					$.get( url, get, function( data ){
+						
+						var $data = $('<div/>').html(data),
+							$t = $data.find('.' + TOOLTIP + '-item');
+						
+						$t.each(function(){
+							
+							var $this = $(this),
+								id = $this.attr( ID ).replace('node-id-',''),
+								tooltip_url = url + '?' + key + '=' + id;
+							
+							// cache the tooltip
+							tooltips[tooltip_url] = $tooltip.clone()
+														.append($this);
+							
+						});
+						
+					}, 'html' );
+				} else {
+					$.post( url + '/' + value, function( data ) {
+						var $data = $('<div/>').html(data),
+							$t = $data.find('.' + TOOLTIP + '-item');
+						
+						$t.each(function(){
+							
+							var $this = $(this),
+								id = $this.attr( ID ).replace('node-id-',''),
+								tooltip_url = url + '/' + id;
+							
+							// cache the tooltip
+							tooltips[tooltip_url] = $tooltip.clone()
+														.append($this);
+							
+						});
+					}, 'html');
+				}
 				
-				$.get( url, get, function( data ){
-					
-					var $data = $('<div/>').html(data),
-						$t = $data.find('.' + TOOLTIP + '-item');
-					
-					$t.each(function(){
-						
-						var $this = $(this),
-							id = $this.attr( ID ).replace('node-id-',''),
-							tooltip_url = url + '?' + key + '=' + id;
-						
-						// cache the tooltip
-						tooltips[tooltip_url] = $tooltip.clone().append($this);
-						
-					});
-					
-				}, 'html' );
 				
 			});
 			
@@ -173,11 +262,11 @@
 	$(document).ready(cacheTooltips);
 	$(window).on( 'resize load', cacheTooltips );
 	
-	
 	function triggerShow( e )
 	{
-		var $this = $(this),
-			tooltip = $this.data( TOOLTIP ) || $this.attr('title'),
+		e.preventDefault();
+		var $this = $(e.target).closest( trigger_selector ),
+			tooltip = $this.data( TOOLTIP ) || $this.data( TOOLTIP + 'title' ),
 			delay_this = 0;
 		
 		// catch any stragglers
@@ -186,10 +275,17 @@
 			cacheTooltips();
 			delay_this = delay;
 		}
+		
+		$( '.' + TOOLTIP + '-box' )
+			.fadeOut( fade_speed, function(){
+				$(this).remove();
+			});
 
 		setTimeout(function(){
 			showTooltip( $this, tooltips[tooltip] );
 		}, delay_this );
+		
+		return FALSE;
 	}
 	
 	function showTooltip( $trigger, $tooltip )
@@ -214,7 +310,7 @@
 			$tip = $tooltip.clone( TRUE );
 			$trigger.data( 'tooltip-div', $tip );
 		}
-		
+
 		$tip.appendTo( $body )
 			.addClass( TOOLTIP + '-' + side );
 		
@@ -258,10 +354,11 @@
 		active = TRUE;
 	}
 	
-	function hideTooltip()
+	function hideTooltip(e)
 	{
-		var $link = $(this).removeClass( hover_class ),
-			$tip = $link.data('tooltip-div');
+		var $this = $(e.target).closest( trigger_selector )
+						.removeClass( hover_class ),
+			$tip = $this.data('tooltip-div');
 		
 		if ( $tip != UNDEFINED )
 		{
@@ -275,29 +372,83 @@
 		// re position the body
 		$body.css('position',body_o_position);
 	}
+	
+	function emptyFunc(){};
 		
 	// tooltips should only show on wide screens
 	window.watchResize(function(){
 		
-		watching = width > 480;
+		var timer = NULL;
 		
-		if ( watching )
+		function show( e )
 		{
-			$( trigger_selector ).hoverIntent({
-				over: triggerShow,
-				timeout: (delay * 4),
-				out: hideTooltip
-			});
+			// suppress titles
+			var o_title = $(this).attr('title');
+			if ( o_title )
+			{
+				$(this)
+					.removeAttr( 'title' )
+					.data( TOOLTIP + 'title', o_title );
+			}
+			
+			timer = setTimeout(function(){
+				triggerShow(e);
+			}, delay);
+		}
+		function hide( e )
+		{
+			if ( timer )
+			{
+				clearTimeout( timer );
+				timer = NULL;
+			}
+			hideTooltip(e);
+			
+			// suppress titles
+			var o_title = $(this).data( TOOLTIP + 'title' );
+			if ( o_title )
+			{
+				$(this).attr( 'title', o_title );
+			}
+		}
+		function checkKeyup( e )
+		{
+			var key = e.which;
+			if ( key == 13 )
+			{
+				$(this).triggerHandler('mouseenter');
+			}
+			else if ( key == 27 )
+			{
+				$(this).triggerHandler('mouseleave');
+			}
+		}
+	
+		
+		if ( ! watching )
+		{
+			$( trigger_selector )
+				// keyboard
+				.off( 'keyup', checkKeyup )
+				.off( 'blur', hide )
+				// touch
+				.off( tap_evt, triggerShow )
+				// mouse
+				.off( 'mouseenter', show )
+				.off( 'mouseleave',  hide );
 		}
 		else
 		{
-			$( trigger_selector ).hoverIntent({
-				over: function(){},
-				timeout: 0,
-				out: function(){}
-			});
+			$( trigger_selector )
+				// keyboard
+				.on( 'keyup', checkKeyup )
+				.on( 'blur', hide )
+				// touch
+				.on( tap_evt, triggerShow )
+				// mouse
+				.on( 'mouseenter', show )
+				.on( 'mouseleave',  hide );
 		}
-		
 	});
-
+	
 })( jQuery, window );
